@@ -193,3 +193,6 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 out*.wav
+hf_models/kyutai/*
+runs
+.hf_home
