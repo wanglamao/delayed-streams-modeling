@@ -1,0 +1,96 @@
+services:
+  sft:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kyutai-stt-finetune:latest
+
+    # GPU configuration - use GPU 2 and 3 only
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 8
+              capabilities: [gpu]
+
+    # Environment variables
+    environment:
+      - CUDA_VISIBLE_DEVICES=2,3
+      - PYTHONUNBUFFERED=1
+      - HF_HOME=/workspace/.hf_home
+      - NCCL_DEBUG=INFO
+      - TORCH_DISTRIBUTED_DEBUG=INFO
+
+    # Volume mounts
+    volumes:
+      # Mount the entire delayed-streams-modeling directory for code
+      - .:/workspace/delayed-streams-modeling
+
+      # Mount local data directories (emilia_25 test data)
+      - /nvmedata/ala_storage/ala_data/emilia_test_25:/workspace/data/emilia_test_25:ro
+
+      # Mount model files (stt-1b-en_fr-candle)
+      - /nvmedata/ala_storage/stt-1b-en_fr-candle:/workspace/hf_models/stt-1b-en_fr-candle:ro
+
+      # Mount HF cache to persist model downloads
+      - ./.hf_home:/workspace/.hf_home
+
+      # Mount runs directory for checkpoints and logs
+      - ./runs:/workspace/runs
+
+    # Working directory
+    working_dir: /workspace/moshi-finetune
+
+    # Network mode
+    network_mode: host
+
+    # Shared memory size for dataloaders
+    shm_size: '16gb'
+
+    # Command to run training (using 2 GPUs)
+    # Usage: docker compose up sft
+    command: >
+      torchrun
+      --nproc-per-node 2
+      -m train
+      /workspace/delayed-streams-modeling/configs/stt_zh_lora_docker.yaml
+
+  # Interactive shell service for debugging
+  kyutai-stt-shell:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kyutai-stt-finetune:latest
+    container_name: kyutai-stt-shell
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 2
+              capabilities: [gpu]
+
+    environment:
+      - CUDA_VISIBLE_DEVICES=2,3
+      - PYTHONUNBUFFERED=1
+      - HF_HOME=/workspace/.hf_home
+
+    volumes:
+      - .:/workspace/delayed-streams-modeling
+      - /nvmedata/ala_storage/ala_data/emilia_test_25:/workspace/data/emilia_test_25:ro
+      - /nvmedata/ala_storage/stt-1b-en_fr-candle:/workspace/hf_models/stt-1b-en_fr-candle:ro
+      - ./.hf_home:/workspace/.hf_home
+      - ./runs:/workspace/runs
+
+    working_dir: /workspace/moshi-finetune
+
+    stdin_open: true
+    tty: true
+
+    network_mode: host
+
+    shm_size: '16gb'
+
+    command: bash
