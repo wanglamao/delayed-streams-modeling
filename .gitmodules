@@ -1,6 +1,6 @@
 [submodule "moshi"]
 	path = moshi
-	url = https://github.com/kyutai-labs/moshi.git
+	url = git@github.com:wanglamao/moshi.git
 [submodule "moshi-finetune"]
 	path = moshi-finetune
 	url = git@github.com:wanglamao/moshi-finetune.git
