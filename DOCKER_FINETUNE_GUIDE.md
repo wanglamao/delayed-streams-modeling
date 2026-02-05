@@ -4,6 +4,12 @@
 
 本文档描述如何使用 Docker 和 Docker Compose 进行 Kyutai STT 模型的微调训练。
 
+**支持的数据格式**:
+- JSONL + JSON 文件 (< 100万样本)
+- WebDataset tar 格式 (> 100万样本，推荐用于大规模数据)
+
+详见 [WebDataset Guide](WEBDATASET_GUIDE.md)
+
 ## 文件结构
 
 ```
