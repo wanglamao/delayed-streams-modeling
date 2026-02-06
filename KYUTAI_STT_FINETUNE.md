@@ -48,12 +48,32 @@ python scripts/convert_to_webdataset.py \
   --samples_per_shard 5000
 
 # 2. 修改训练配置
-# 编辑 moshi-finetune/example/stt_zh_lora.yaml
+# 编辑 configs/stt_sft_filtered_zh_data.yaml
 # 设置 data.train_data 和 run_dir
 
-# 3. 启动训练
+# 3. 启动训练（2 卡示例）
 cd moshi-finetune
-torchrun --nproc-per-node 2 -m train example/stt_zh_lora.yaml
+torchrun --nproc-per-node 2 -m train ../configs/stt_sft_filtered_zh_data.yaml
+```
+
+### 测试 Checkpoint
+
+训练过程中或训练后测试效果：
+
+```bash
+conda activate ala
+
+# 单文件测试（详细模式）
+python scripts/stt_test_checkpoint.py \
+  --checkpoint /path/to/run_dir/checkpoints/checkpoint_000100/consolidated \
+  --audio test.wav \
+  --verbose
+
+# 批量测试（汇总统计）
+python scripts/stt_test_checkpoint.py \
+  --checkpoint /path/to/checkpoint/consolidated \
+  --audio data/stt_zh/wavs/*.wav \
+  --batch
 ```
 
 详细步骤见下文。
@@ -64,8 +84,10 @@ torchrun --nproc-per-node 2 -m train example/stt_zh_lora.yaml
 
 ### 1.1 `delayed-streams-modeling` (推理/评估)
 
-- **推理脚本**: `scripts/stt_from_file_pytorch.py`
-  - 通过 `moshi.models.loaders.CheckpointInfo.from_hf_repo(...)` 加载模型
+- **推理脚本**:
+  - `scripts/stt_test_checkpoint.py` - **推荐**: 微调 checkpoint 测试专用，支持 CER 计算和 mode collapse 检测
+  - `scripts/stt_from_file_pytorch.py` - 官方推理脚本，适用于原始 HF 模型
+  - 加载方式: `moshi.models.loaders.CheckpointInfo.from_hf_repo(...)`
 
 - **配置文件**: `configs/config-stt-en_fr-hf.toml`, `configs/config-stt-en-hf.toml`
   - 包含 `text_tokenizer_file`, `audio_tokenizer_file (mimi)`, `asr_delay_in_tokens`
@@ -183,7 +205,7 @@ moshi_paths:
 # 输出目录
 run_dir: "/path/to/runs/stt_zh_lora_run1"
 
-# LoRA 配置
+# LoRA 配置 (推荐，避免全参数微调不稳定)
 full_finetuning: false
 lora:
   enable: true
@@ -197,6 +219,7 @@ batch_size: 2                 # 根据显存调整
 max_steps: 2000
 
 gradient_checkpointing: true
+max_norm: 1.0                 # 梯度裁剪，防止梯度爆炸
 
 optim:
   lr: 2.0e-5
@@ -210,13 +233,30 @@ do_ckpt: true
 ckpt_freq: 100
 
 # 推荐合并保存权重 (方便推理)
-save_adapters: false
+save_adapters: false          # LoRA 模式下可设为 true 只保存 adapter
 
-# STT 特有配置
+# ⚠️ STT 特有配置 (非常重要！)
 interleaver:
   downmix_to_mono: true       # 自动转单声道
-  audio_delay_sec: 0.0        # DSM 延迟补偿 (可选)
+  audio_delay_sec: 0.5        # ⚠️ 必须匹配原始模型的 audio_delay_seconds (见 config.json)
+
+text_padding_weight: 0.1      # ⚠️ Padding token loss 权重 (不要过高，否则 mode collapse)
 ```
+
+**⚠️ 关键参数说明**:
+
+- `audio_delay_sec`: **必须与原始模型的 `audio_delay_seconds` 一致**！
+  - `kyutai/stt-1b-en_fr-candle`: 0.5s (查看 checkpoint 的 `config.json`)
+  - `kyutai/stt-2.6b-en-candle`: 2.5s
+  - 错配会导致音文对齐失败和 mode collapse (见 [8.2 故障排除](#82-严重问题-模型-mode-collapse-模态崩溃))
+
+- `text_padding_weight`: 控制 padding token 的 loss 权重
+  - 推荐值: 0.1 (不要超过 0.5)
+  - 过高会导致模型依赖 padding token 而非学习真实语音
+
+- `full_finetuning: false` + `lora.enable: true`: **强烈推荐**
+  - 全参数微调 (1B+ 模型) 容易不稳定
+  - LoRA 更稳定且节省显存
 
 ### 4.3 显存优化配置
 
@@ -295,7 +335,66 @@ docker compose up sft
 
 ## 推理验证
 
-### 6.1 合并权重推理 (推荐)
+### 6.1 快速测试推理 (推荐)
+
+使用封装好的测试脚本 `scripts/stt_test_checkpoint.py`:
+
+```bash
+conda activate ala
+
+# 测试单个音频文件
+python scripts/stt_test_checkpoint.py \
+  --checkpoint /path/to/run_dir/checkpoints/checkpoint_000100/consolidated \
+  --audio test.wav
+
+# 详细模式（显示 token 分析，检测 mode collapse）
+python scripts/stt_test_checkpoint.py \
+  --checkpoint /path/to/checkpoint/consolidated \
+  --audio test.wav \
+  --verbose
+
+# 批量测试（显示汇总统计和平均 CER）
+python scripts/stt_test_checkpoint.py \
+  --checkpoint /path/to/checkpoint/consolidated \
+  --audio data/stt_zh/wavs/*.wav \
+  --batch
+```
+
+**脚本特性**:
+- ✓ 自动查找 mimi 和 tokenizer 权重（无需手动指定）
+- ✓ 自动加载标准答案（同名 .json 文件）并计算 CER
+- ✓ Token 多样性检测（自动警告 mode collapse）
+- ✓ 支持批量测试和汇总统计（平均 CER、整体 token 分布）
+- ✓ 支持通配符（如 `*.wav`）批量处理
+
+**参数说明**:
+- `--checkpoint`: checkpoint 的 consolidated 目录路径
+- `--audio`: 音频文件路径（支持多个文件和通配符）
+- `--verbose`: 显示详细信息（token IDs、多样性分析等）
+- `--batch`: 批量模式（简洁输出，显示汇总统计）
+- `--mimi-weight`: (可选) 手动指定 Mimi 权重路径
+- `--tokenizer`: (可选) 手动指定 tokenizer 路径
+- `--device`: 运行设备（默认 cuda）
+
+**输出示例**:
+
+```
+[转录结果]
+  加快具有中国特色的原始性创新技术
+
+[标准答案]
+  加快具有中国特色的原始性创新技术与装备的研发
+
+[字符错误率 (CER)]
+  8.33%
+  ⚠️  有少量错误
+
+[Token 分析]
+  唯一 Tokens: 235
+  ✓ Token 多样性正常
+```
+
+### 6.2 使用官方脚本推理
 
 Checkpoint 路径:
 ```
@@ -304,21 +403,23 @@ Checkpoint 路径:
 
 推理命令:
 ```bash
+conda activate ala
 python scripts/stt_from_file_pytorch.py \
   --hf-repo kyutai/stt-1b-en_fr-candle \
   --moshi-weight runs/stt_zh_lora_run1/checkpoints/checkpoint_000100/consolidated/consolidated.safetensors \
   test_audio.wav
 ```
 
-### 6.2 LoRA Adapter 推理
+### 6.3 LoRA Adapter 推理
 
 如果 `save_adapters: true`，需要修改推理脚本支持 LoRA 加载 (当前未实现)。
 
 **建议**: 训练时使用 `save_adapters: false`，直接保存合并权重。
 
-### 6.3 批量评估
+### 6.4 批量评估
 
 ```bash
+conda activate ala
 python scripts/stt_evaluate_on_dataset.py \
   --dataset your_test_set \
   --hf-repo kyutai/stt-1b-en_fr-candle \
@@ -403,13 +504,142 @@ python scripts/inspect_webdataset.py --data_dir data/stt_zh_webdataset
 
 ---
 
-### 8.2 调试技巧
+### 8.2 严重问题: 模型 Mode Collapse (模态崩溃)
+
+**症状**: 微调后模型只生成重复的无意义 token，完全无法识别语音
+
+**发现过程** (2026-02-06):
+
+测试了多个 checkpoint (run2/run3 的 step 500/1000)，所有模型均出现严重 mode collapse:
+
+```bash
+# 测试音频: emilia_zh_0000983244.wav
+# 真实标注: "加快具有中国特色的原始性创新技术与装备的研发实现传统食品传统餐饮的工业化标准化"
+
+# 模型输出 (所有 checkpoint):
+Token IDs: [260, 260, 233, 260, 233, 260, 233, ...]  # 只有 260 (空格) 和 233 (<0xE5>)
+解码结果: "  �  �  �  �  �  �  �  �  �  �  �  �"  # 完全无效
+```
+
+**对比测试**: 原始英法 STT 模型在相同音频上能输出部分中文词汇 (虽不完美但可识别)，证明 tokenizer 支持中文且音频无问题。
+
+**推理测试脚本**:
+
+```bash
+conda activate ala
+
+# 推荐：使用封装脚本（自动查找权重，显示 token 分析）
+python scripts/stt_test_checkpoint.py \
+  --checkpoint /path/to/checkpoint/consolidated \
+  --audio test_audio.wav \
+  --verbose
+
+# 或使用官方脚本
+python scripts/stt_from_file_pytorch.py \
+  --hf-repo kyutai/stt-1b-en_fr-candle \
+  --moshi-weight /path/to/checkpoint/consolidated/consolidated.safetensors \
+  test_audio.wav
+```
+
+**根因分析**:
+
+训练配置检查发现多个可能导致崩溃的问题:
+
+| 问题 | run2 配置 | run3 配置 | 影响 |
+|------|----------|----------|------|
+| **audio_delay_sec** | 0.8 秒 | 1.0 秒 | 原始模型 config.json 中 `audio_delay_seconds: 0.5`，训练时错位导致音文对齐失败 |
+| **text_padding_weight** | 0.5 (隐式) | 0.5 (隐式) | Padding token loss 权重过高，模型学会依赖 padding |
+| **full_finetuning** | true | true | 全参数微调不稳定，容易破坏预训练权重 |
+| **learning_rate** | 0.0002 | 2e-5 | run2 初始 lr 过高导致 step 1000 后 loss=NaN |
+| **batch_size** | 128 | 64 | run2 batch 过大可能加剧不稳定性 |
+
+**训练指标检查**:
+
+```bash
+# run2: Loss 快速下降但出现 NaN
+step 100:  loss=3.16, text_loss=3.16
+step 500:  loss=1.15, text_loss=1.15
+step 1000: loss=0.80, text_loss=0.80
+step 1060: loss=NaN, text_loss=NaN  # 崩溃
+
+# run3: Loss 正常下降，无 NaN，但仍 mode collapse
+step 100:  loss=3.02, text_loss=3.02, perplexity=2.23
+step 500:  loss=0.88, text_loss=0.88, perplexity=1.84
+step 1000: loss=0.84, text_loss=0.84, perplexity=1.79
+```
+
+**解决方案** (已应用到 `configs/stt_sft_filtered_zh_data.yaml`):
+
+1. **修正 audio_delay_sec**:
+   ```yaml
+   interleaver:
+     audio_delay_sec: 0.5  # 匹配原始模型的 audio_delay_seconds
+   ```
+
+2. **降低 text_padding_weight**:
+   ```yaml
+   text_padding_weight: 0.1  # 从 0.5 降低到 0.1，避免过度依赖 padding token
+   ```
+
+3. **切换到 LoRA 训练**:
+   ```yaml
+   full_finetuning: false
+   lora:
+     enable: true
+     rank: 64
+     scaling: 2.0
+     ft_embed: false
+   save_adapters: true  # LoRA 模式下保存 adapter
+   ```
+
+4. **添加梯度裁剪**:
+   ```yaml
+   max_norm: 1.0  # 防止梯度爆炸
+   ```
+
+5. **更新 run_dir**:
+   ```yaml
+   run_dir: "/nvmedata/ala_storage/ala_runs/stt_zh_filtered_2_5m_run4_lora"
+   ```
+
+**验证步骤**:
+
+重新训练后，在 step 100、500、1000 分别测试:
+
+```bash
+conda activate ala
+
+# 使用封装脚本测试
+python scripts/stt_test_checkpoint.py \
+  --checkpoint /nvmedata/ala_storage/ala_runs/stt_zh_filtered_2_5m_run4_lora/checkpoints/checkpoint_000100/consolidated \
+  --audio delayed-streams-modeling/data/stt_zh/wavs/emilia_zh_0000983244.wav \
+  --verbose
+
+# 预期结果:
+# - Token 多样性显著提高 (不再只有 260, 233)
+# - 能输出部分中文汉字 (即使有错误)
+# - Loss 稳定下降，无 NaN
+```
+
+**关键教训**:
+
+1. **音文对齐参数至关重要**: `audio_delay_sec` 必须匹配原始模型的 `audio_delay_seconds`
+2. **Padding token 权重不能过高**: 会导致模型学会依赖 padding 而非真正识别
+3. **全参数微调风险大**: 对于大模型 (1B+)，LoRA 更稳定
+4. **Training loss 不能作为唯一指标**: run3 loss 正常但模型完全无效，必须做推理验证
+5. **Baseline 对比必不可少**: 原始模型测试确认了 tokenizer 和数据无问题
+
+---
+
+### 8.3 调试技巧
 
 1. **先跑小数据集** (100-1000 样本)
 2. **检查数据格式**: `validate_stt_dataset.py`
 3. **验证 WebDataset**: `inspect_webdataset.py --verify`
 4. **查看详细日志**: `log_freq: 1`
 5. **单步调试**: 在训练代码中加 `import pdb; pdb.set_trace()`
+6. **定期推理验证**: 不要只看 loss，在 checkpoint 上实际测试音频输出
+7. **对比原始模型**: 用原始权重测试相同音频，确认 baseline 行为
 
 ---
 
@@ -435,11 +665,22 @@ python scripts/inspect_webdataset.py --data_dir data/stt_zh_webdataset
 
 ### 当前状态
 
-**训练基础设施**: 已就绪 ✓
+**训练实验**:
+
+| Run ID | 数据规模 | 配置 | 状态 | 结果 |
+|--------|---------|------|------|------|
+| run2 | 2.5M 样本 | Full finetune, lr=0.0002, batch=128 | ❌ 失败 | Step 1000 后 loss=NaN，mode collapse |
+| run3 | 2.5M 样本 | Full finetune, lr=2e-5, batch=64 | ❌ 失败 | Loss 正常但 mode collapse (audio_delay_sec=1.0 错配) |
+| run4_lora | 2.5M 样本 | LoRA, audio_delay_sec=0.5, text_padding_weight=0.1 | 🔄 待运行 | 预期: 音文对齐正确，训练稳定 |
+
+**问题诊断完成** ✓:
+- 识别 mode collapse 根因 (audio_delay 错配 + padding weight 过高 + 全参数不稳定)
+- 完成配置修正 (`configs/stt_sft_filtered_zh_data.yaml`)
+- 文档化故障排查流程 (见 [8.2 模型 Mode Collapse](#82-严重问题-模型-mode-collapse-模态崩溃))
 
 **待实际训练验证**:
-- [ ] 在真实大规模中文数据集上训练
-- [ ] 收敛性和效果评估
+- [ ] 在 run4_lora 配置上训练并验证收敛性
+- [ ] 确认 LoRA 训练消除 mode collapse
 - [ ] 时间戳对齐精度验证
 - [ ] 中文 CER 评测
 
