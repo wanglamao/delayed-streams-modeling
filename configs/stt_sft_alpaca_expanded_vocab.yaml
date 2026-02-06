@@ -1,0 +1,53 @@
+# Kyutai STT 1B 中文微调配置 - Alpaca 扩展词表版本
+# 使用合并后的 Alpaca Chinese tokenizer (~32k vocab)
+# 对扩展后的 embedding 层进行 LoRA 微调
+
+data:
+  train_data: "/nvmedata/ala_storage/ala_data/filtered_zh_2_5m_webdataset/train"
+  eval_data: "/nvmedata/ala_storage/ala_data/filtered_zh_2_5m_webdataset/eval"
+  shuffle: true
+  use_webdataset: true
+
+moshi_paths:
+  hf_repo_id: null
+  moshi_path: "/nvmedata/ala_storage/alpaca_vocab_expansion/model/expanded_model.safetensors"
+  mimi_path: "/nvmedata/ala_storage/stt-1b-en_fr-candle/mimi-pytorch-e351c8d8@125.safetensors"
+  tokenizer_path: "/nvmedata/ala_storage/alpaca_vocab_expansion/tokenizer/tokenizer_alpaca_merged.model"
+  config_path: "/nvmedata/ala_storage/alpaca_vocab_expansion/model/config.json"
+
+interleaver:
+  audio_delay_sec: 0.5  # 与原始模型一致
+  downmix_to_mono: true
+  keep_main_only: true
+  main_speaker_label: "SPEAKER_MAIN"
+
+run_dir: "/nvmedata/ala_storage/ala_runs/stt_zh_alpaca_vocab_lora2"
+
+full_finetuning: false  # 使用 LoRA
+lora:
+  enable: true  # 启用 LoRA
+  rank: 128  # 更高的 rank 以适应扩展的 embedding
+  scaling: 2.0
+  ft_embed: true  # 对 embedding 层进行微调（关键！）
+
+duration_sec: 20
+batch_size: 64
+max_steps: 30000  # 增加训练步数以充分训练新词
+
+gradient_checkpointing: true
+max_norm: 1.0  # Gradient clipping
+text_padding_weight: 0.1  # 降低 padding token 权重
+
+optim:
+  lr: 5.0e-5  # 稍高的学习率加速新词学习
+  weight_decay: 0.1
+  pct_start: 0.05  # 5% warmup
+
+seed: 42
+log_freq: 1
+do_eval: true
+eval_freq: 100
+do_ckpt: true
+ckpt_freq: 500
+
+save_adapters: true  # 保存 LoRA adapter 权重

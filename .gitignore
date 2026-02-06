@@ -196,3 +196,4 @@ out*.wav
 hf_models/kyutai/*
 runs
 .hf_home
+data/stt_zh_webdataset

@@ -27,7 +27,7 @@ lora:
   enable: true  # 启用 LoRA
   rank: 64
   scaling: 2.0
-  ft_embed: false
+  ft_embed: true
 
 duration_sec: 20
 batch_size: 64
