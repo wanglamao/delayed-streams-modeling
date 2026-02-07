@@ -20,22 +20,22 @@ interleaver:
   keep_main_only: true
   main_speaker_label: "SPEAKER_MAIN"
 
-run_dir: "/nvmedata/ala_storage/ala_runs/stt_zh_filtered_2_5m_run4_lora"
+run_dir: "/nvmedata/ala_storage/ala_runs/stt_zh_filtered_2_5m_run5"
 
-full_finetuning: false  # 改用 LoRA
+full_finetuning: true  # 改用 LoRA
 lora:
-  enable: true  # 启用 LoRA
-  rank: 64
+  enable: false  # 启用 LoRA
+  rank: 256
   scaling: 2.0
   ft_embed: true
 
 duration_sec: 20
-batch_size: 64
+batch_size: 256
 max_steps: 10000
 
 gradient_checkpointing: true
 max_norm: 1.0  # Gradient clipping
-text_padding_weight: 0.1  # 降低 padding token 权重，避免模型过度依赖
+text_padding_weight: 0.2  # 降低 padding token 权重，避免模型过度依赖
 optim:
   lr: 2.0e-5
   weight_decay: 0.1
@@ -44,8 +44,8 @@ optim:
 seed: 42
 log_freq: 1
 do_eval: true
-eval_freq: 100
+eval_freq: 50
 do_ckpt: true
 ckpt_freq: 500
 
-save_adapters: true  # LoRA 模式下保存 adapter 权重
+save_adapters: false  # LoRA 模式下保存 adapter 权重
