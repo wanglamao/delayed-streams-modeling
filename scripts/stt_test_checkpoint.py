@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-测试微调后的 STT checkpoint 推理效果
+测试微调后的 STT checkpoint 推理效果 (自动检测 LoRA 或普通 checkpoint)
 
 用法示例:
   # 测试单个音频文件
@@ -28,6 +28,7 @@
 #     "julius",
 #     "sphn",
 #     "safetensors",
+#     "pyyaml",
 # ]
 # ///
 
@@ -46,28 +47,19 @@ import torch
 
 
 def load_checkpoint(checkpoint_dir: Path, device: str = "cuda"):
-    """加载 STT checkpoint"""
+    """加载 STT checkpoint (自动检测 LoRA 或普通模型)"""
     checkpoint_dir = Path(checkpoint_dir)
+
+    # 检查是否需要进入 consolidated 子目录
+    if (checkpoint_dir / "consolidated").exists():
+        checkpoint_dir = checkpoint_dir / "consolidated"
 
     # 构建路径
     config_path = checkpoint_dir / "config.json"
-    moshi_weight = checkpoint_dir / "consolidated.safetensors"
 
-    # 查找 mimi 和 tokenizer (通常在父目录或固定位置)
-    # 优先使用 checkpoint 同级目录
-    parent = checkpoint_dir.parent.parent.parent
-    mimi_weight = parent / "mimi.safetensors"
-    tokenizer_path = parent / "tokenizer_spm_32k_3.model"
-
-    # 如果找不到，尝试从环境变量或默认位置
-    if not mimi_weight.exists():
-        # 尝试 run_dir 根目录
-        run_root = checkpoint_dir.parent.parent.parent
-        mimi_weight = run_root / "mimi.safetensors"
-
-    if not tokenizer_path.exists():
-        run_root = checkpoint_dir.parent.parent.parent
-        tokenizer_path = run_root / "tokenizer_spm_32k_3.model"
+    # 检测 checkpoint 类型
+    is_lora = (checkpoint_dir / "lora.safetensors").exists()
+    moshi_weight = checkpoint_dir / ("lora.safetensors" if is_lora else "consolidated.safetensors")
 
     if not config_path.exists():
         print(f"❌ 找不到配置文件: {config_path}")
@@ -75,27 +67,87 @@ def load_checkpoint(checkpoint_dir: Path, device: str = "cuda"):
     if not moshi_weight.exists():
         print(f"❌ 找不到模型权重: {moshi_weight}")
         sys.exit(1)
-    if not mimi_weight.exists():
-        print(f"❌ 找不到 Mimi 权重: {mimi_weight}")
-        print(f"   请手动指定: --mimi-weight /path/to/mimi.safetensors")
+
+    # LoRA checkpoint 需要从 args.yaml 读取基座模型路径
+    base_model_path = None
+    mimi_weight = None
+    tokenizer_path = None
+
+    if is_lora:
+        # 读取 run_dir 的 args.yaml
+        run_dir = checkpoint_dir.parent.parent.parent
+        args_path = run_dir / "args.yaml"
+
+        if args_path.exists():
+            import yaml
+            with open(args_path) as f:
+                args = yaml.safe_load(f)
+                moshi_paths = args.get("moshi_paths", {})
+                base_model_path = moshi_paths.get("moshi_path")
+                mimi_weight = moshi_paths.get("mimi_path")
+                tokenizer_path = moshi_paths.get("tokenizer_path")
+
+        if not base_model_path or not Path(base_model_path).exists():
+            print(f"❌ LoRA checkpoint 需要基座模型，但找不到路径")
+            print(f"   检查了: {args_path}")
+            sys.exit(1)
+    else:
+        # 普通 checkpoint - 查找 mimi 和 tokenizer
+        run_dir = checkpoint_dir.parent.parent.parent
+
+        # 尝试多个位置
+        for parent in [run_dir, checkpoint_dir.parent.parent.parent]:
+            if not mimi_weight or not Path(str(mimi_weight)).exists():
+                mimi_weight = parent / "mimi.safetensors"
+            if not tokenizer_path or not Path(str(tokenizer_path)).exists():
+                for name in ["tokenizer.model", "tokenizer_spm_32k_3.model"]:
+                    tp = parent / name
+                    if tp.exists():
+                        tokenizer_path = tp
+                        break
+
+    if not mimi_weight or not Path(str(mimi_weight)).exists():
+        print(f"❌ 找不到 Mimi 权重")
+        print(f"   尝试的路径: {mimi_weight}")
+        print(f"   请使用: --mimi-weight /path/to/mimi.safetensors")
         sys.exit(1)
-    if not tokenizer_path.exists():
-        print(f"❌ 找不到 tokenizer: {tokenizer_path}")
-        print(f"   请手动指定: --tokenizer /path/to/tokenizer.model")
+    if not tokenizer_path or not Path(str(tokenizer_path)).exists():
+        print(f"❌ 找不到 tokenizer")
+        print(f"   请使用: --tokenizer /path/to/tokenizer.model")
         sys.exit(1)
 
-    print(f"[加载] Checkpoint 路径")
+    # 确保是 Path 对象
+    mimi_weight = Path(str(mimi_weight))
+    tokenizer_path = Path(str(tokenizer_path))
+
+    # 打印加载信息
+    print(f"[加载] {'LoRA' if is_lora else 'Full'} Checkpoint")
     print(f"  Config: {config_path}")
-    print(f"  Moshi: {moshi_weight}")
+    if is_lora:
+        print(f"  Base Model: {base_model_path}")
+        print(f"  LoRA Adapter: {moshi_weight}")
+    else:
+        print(f"  Moshi: {moshi_weight}")
     print(f"  Mimi: {mimi_weight}")
     print(f"  Tokenizer: {tokenizer_path}")
 
+    # 读取配置
+    with open(config_path) as f:
+        config = json.load(f)
+
+    if is_lora:
+        lora_rank = config.get("lora_rank", 64)
+        lora_scaling = config.get("lora_scaling", 2.0)
+        print(f"  LoRA rank: {lora_rank}, scaling: {lora_scaling}")
+
+    # 创建 CheckpointInfo
     info = moshi.models.loaders.CheckpointInfo.from_hf_repo(
         "kyutai/stt-1b-en_fr",  # dummy repo
-        moshi_weights=str(moshi_weight),
+        moshi_weights=str(base_model_path if is_lora else moshi_weight),
         mimi_weights=str(mimi_weight),
         tokenizer=str(tokenizer_path),
         config_path=str(config_path),
+        lora_weights=str(moshi_weight) if is_lora else None,
     )
 
     print(f"[加载] Mimi 音频编解码器")
@@ -104,8 +156,9 @@ def load_checkpoint(checkpoint_dir: Path, device: str = "cuda"):
     print(f"[加载] Tokenizer")
     tokenizer = info.get_text_tokenizer()
 
-    print(f"[加载] 语言模型")
+    print(f"[加载] 语言模型{'(含 LoRA adapter)' if is_lora else ''}")
     lm = info.get_moshi(device=device, dtype=torch.bfloat16)
+    lm.eval()
     lm_gen = moshi.models.LMGen(lm, temp=0, temp_text=0.0)
 
     return mimi, tokenizer, lm_gen, info
@@ -225,7 +278,7 @@ def calculate_cer(pred: str, gt: str) -> float:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="测试微调后的 STT checkpoint",
+        description="测试微调后的 STT checkpoint (自动检测 LoRA 或普通模型)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -233,7 +286,7 @@ def main():
         "--checkpoint",
         type=str,
         required=True,
-        help="Checkpoint 目录 (包含 consolidated.safetensors 和 config.json)",
+        help="Checkpoint 目录 (自动检测是否为 LoRA)",
     )
     parser.add_argument(
         "--audio",
@@ -278,7 +331,14 @@ def main():
     # 处理音频文件列表
     audio_files = []
     for pattern in args.audio:
-        audio_files.extend(Path(".").glob(pattern))
+        matched = list(Path(".").glob(pattern))
+        if matched:
+            audio_files.extend(matched)
+        else:
+            # 尝试绝对路径
+            p = Path(pattern)
+            if p.exists():
+                audio_files.append(p)
 
     if not audio_files:
         print(f"❌ 找不到音频文件: {args.audio}")
@@ -361,11 +421,12 @@ def main():
         print(f"{'='*70}")
 
         total_duration = sum(r["duration"] for r in results)
-        avg_cer = sum(r["cer"] for r in results if r["cer"] is not None) / len([r for r in results if r["cer"] is not None])
+        with_cer = [r for r in results if r["cer"] is not None]
+        avg_cer = sum(r["cer"] for r in with_cer) / len(with_cer) if with_cer else None
 
         print(f"总文件数: {len(results)}")
         print(f"总时长: {total_duration:.2f}s ({total_duration/60:.2f}min)")
-        if any(r["cer"] is not None for r in results):
+        if avg_cer is not None:
             print(f"平均 CER: {avg_cer*100:.2f}%")
 
         # Token 多样性检查
