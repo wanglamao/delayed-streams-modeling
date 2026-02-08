@@ -92,10 +92,19 @@ def load_checkpoint(checkpoint_dir: Path, device: str = "cuda"):
             print(f"   检查了: {args_path}")
             sys.exit(1)
     else:
-        # 普通 checkpoint - 查找 mimi 和 tokenizer
+        # 普通 checkpoint - 先从 args.yaml 读取，再尝试其他位置
         run_dir = checkpoint_dir.parent.parent.parent
+        args_path = run_dir / "args.yaml"
 
-        # 尝试多个位置
+        if args_path.exists():
+            import yaml
+            with open(args_path) as f:
+                args = yaml.safe_load(f)
+                moshi_paths = args.get("moshi_paths", {})
+                mimi_weight = moshi_paths.get("mimi_path")
+                tokenizer_path = moshi_paths.get("tokenizer_path")
+
+        # 尝试多个位置 (如果 args.yaml 没有或路径无效)
         for parent in [run_dir, checkpoint_dir.parent.parent.parent]:
             if not mimi_weight or not Path(str(mimi_weight)).exists():
                 mimi_weight = parent / "mimi.safetensors"
@@ -331,13 +340,20 @@ def main():
     # 处理音频文件列表
     audio_files = []
     for pattern in args.audio:
-        matched = list(Path(".").glob(pattern))
-        if matched:
-            audio_files.extend(matched)
-        else:
-            # 尝试绝对路径
-            p = Path(pattern)
+        p = Path(pattern)
+        if p.is_absolute():
+            # 绝对路径直接使用
             if p.exists():
+                audio_files.append(p)
+            elif "*" in pattern:
+                # 绝对路径的 glob 模式
+                audio_files.extend(p.parent.glob(p.name))
+        else:
+            # 相对路径，尝试 glob
+            matched = list(Path(".").glob(pattern))
+            if matched:
+                audio_files.extend(matched)
+            elif p.exists():
                 audio_files.append(p)
 
     if not audio_files:

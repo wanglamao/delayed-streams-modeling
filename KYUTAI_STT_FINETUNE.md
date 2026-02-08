@@ -2,7 +2,7 @@
 
 **目标**: 在中文带时间戳 ASR 数据上微调 Kyutai STT (Streaming Speech-to-Text) 模型
 
-**最后更新**: 2026-02-06
+**最后更新**: 2026-02-08
 
 > 📚 **文档说明**: 本文档整合了原 `MoshiFinetune_微调Kyutai_STT_中文数据_调研与操作指南.md` 和 `KYUTAI_STT1B_中文微调_进展记录.md`，提供从数据准备到推理验证的完整流程。
 
@@ -647,7 +647,7 @@ python scripts/stt_test_checkpoint.py \
 
 ### 已完成 ✓
 
-日期: 2026-02-06
+日期: 2026-02-07
 
 - [x] 数据格式调研和对齐方案
 - [x] 本地 HF 模型下载脚本 (`scripts/hf_download.py`)
@@ -662,27 +662,67 @@ python scripts/stt_test_checkpoint.py \
   - 完整使用文档 (`WEBDATASET_GUIDE.md`)
 - [x] Docker 训练环境 (`Dockerfile`, `docker-compose.yml`)
 - [x] 完整文档整合
+- [x] **Checkpoint 测试工具**:
+  - 测试脚本 (`scripts/stt_test_checkpoint.py`) - 自动检测 LoRA/Full checkpoint
+  - 手动评测脚本 (`scripts/stt_eval_checkpoint.py`) - 支持 WebDataset eval 数据
+  - Skill 命令 (`/test-ckpt`) - 快速测试 checkpoint
+- [x] **Eval 代码修复** (2026-02-07):
+  - 修复 eval_data_loader 只能遍历一次的问题（每次 eval 重新创建 iterator）
+  - 修复 eval 只评测 40 个 batch 的硬编码问题（改为每 GPU 100 个 batch）
+  - 修复 sample 计数实际是 batch 计数的问题（现在分别统计）
+- [x] **词表扩展工具** (`tokenizer_extension/`):
+  - `expand_model_embeddings.py` - 扩展模型 embedding 层
+  - `verify_model_initialization.py` - 验证初始化正确性
+  - 支持 random/weighted_average/mean/zeros 初始化策略
 
 ### 当前状态
 
-**训练实验**:
+**训练实验** (2026-02-08):
 
-| Run ID | 数据规模 | 配置 | 状态 | 结果 |
-|--------|---------|------|------|------|
-| run2 | 2.5M 样本 | Full finetune, lr=0.0002, batch=128 | ❌ 失败 | Step 1000 后 loss=NaN，mode collapse |
-| run3 | 2.5M 样本 | Full finetune, lr=2e-5, batch=64 | ❌ 失败 | Loss 正常但 mode collapse (audio_delay_sec=1.0 错配) |
-| run4_lora | 2.5M 样本 | LoRA, audio_delay_sec=0.5, text_padding_weight=0.1 | 🔄 待运行 | 预期: 音文对齐正确，训练稳定 |
+| Run ID | 模型 | 数据规模 | 配置 | 状态 | 进度 | 备注 |
+|--------|------|---------|------|------|------|------|
+| stt_zh_char_level_random_init2 | 扩词表 24K (random init) | 2.5M 样本 | LoRA rank=128, lr=1e-4, ft_embed=true | ❌ mode collapse | 11800/30000 (39.3%) | 只输出 "是" 或重复 "这个" |
+| stt_zh_filtered_2_5m_run5 | 原始 8K vocab | 2.5M 样本 | LoRA rank=128, lr=1e-4 | ❌ mode collapse | 10000/30000 (33.3%) | 只输出乱码 token (260, 233) |
 
-**问题诊断完成** ✓:
-- 识别 mode collapse 根因 (audio_delay 错配 + padding weight 过高 + 全参数不稳定)
-- 完成配置修正 (`configs/stt_sft_filtered_zh_data.yaml`)
-- 文档化故障排查流程 (见 [8.2 模型 Mode Collapse](#82-严重问题-模型-mode-collapse-模态崩溃))
+#### Checkpoint 测试记录 (2026-02-08)
 
-**待实际训练验证**:
-- [ ] 在 run4_lora 配置上训练并验证收敛性
-- [ ] 确认 LoRA 训练消除 mode collapse
-- [ ] 时间戳对齐精度验证
+**stt_zh_filtered_2_5m_run5 / checkpoint_010000**:
+
+| 音频 | 转录结果 | 标准答案 | CER |
+|------|----------|----------|-----|
+| emilia_zh_0000983244.wav | `� � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � � �` | 加快具有中国特色的原始性创新技术与装备的研发实现传统食品传统餐饮的工业化标准化 | 130.77% |
+
+- 唯一 token 仅 2 种 (260, 233)
+- train loss 1.073 , eval loss 1.137
+
+**stt_zh_char_level_random_init2 / checkpoint_011800**:
+
+| 音频 | 转录结果 | 标准答案 | CER |
+|------|----------|----------|-----|
+| emilia_zh_0000983244.wav | 是我们不能够在一个国家或地区 | 加快具有中国特色的原始性创新技术与装备的研发实现传统食品传统餐饮的工业化标准化 | 100% |
+| emilia_zh_0008348230.wav | 是 | 每当这个韦后身体有某种不适了他就会频频传唤这个马清克而这个医术高明的马大夫总能是手到病除除此之外韦后还忽然喜欢上了 | 98.2% |
+| emilia_zh_0009298573.wav | 是 | 我的内心总是充满正义的热情 | 92.3% |
+| emilia_zh_0001600648.wav | 是 | 所以我再给大家举个比较实际的例子就是这个前面的这个presentation可以怎么说呢... | 99.0% |
+| emilia_zh_0001287385.wav | 是这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这个这 | 那么这种思想啊所以谓之为反思的啊是因为他是以人生为对象啊以人生为对象 | 326.5% |
+| emilia_zh_0001349285.wav | 是他们的心一直在他的心里 | 过一个生日就长大一岁长大一岁嘛就懂儿一点 | 95.0% |
+
+- 批量统计: 平均 CER 142.21%，唯一 token 11 种 / 127 总 (8.7%)
+- Train loss: 1.5978, Eval loss: 1.7623
+
+**历史实验** (已终止):
+
+| Run ID | 原因 |
+|--------|------|
+| run2 | loss=NaN，lr 过高 |
+| run3 | audio_delay_sec 错配导致 mode collapse |
+| run4_lora | 已终止 |
+| stt_zh_char_level | weighted_average 初始化导致 mode collapse |
+
+**待验证**:
+- [ ] 扩词表模型收敛性
+- [ ] 原始模型收敛性
 - [ ] 中文 CER 评测
+- [ ] 时间戳对齐精度
 
 ### 未来计划
 
@@ -713,8 +753,6 @@ python scripts/stt_test_checkpoint.py \
 - [ ] **期望输出**: 字级 / 词级 / 句级时间戳？
 - [ ] **数据规模**: < 100万 (JSONL) / > 100万 (WebDataset)
 - [ ] **分词策略**: 中文是否需要预分词？
-
-> 备注: DSM 固定延迟 (`asr_delay_in_tokens`) 可能导致时间戳偏移，后续需记录偏移量和补偿方案。
 
 ---
 
